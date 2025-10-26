@@ -24,6 +24,24 @@ class MLPPlanner(nn.Module):
         self.n_track = n_track
         self.n_waypoints = n_waypoints
 
+        # Input: n_track points from left (n_track, 2) and right (n_track, 2)
+        # Total: 2 * n_track * 2 = 4 * n_track features per track
+        input_dim = 2 * n_track * 2  # 40 when n_track=10
+        
+        # Design a simple MLP architecture
+        hidden_dim = 128
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, n_waypoints * 2)  # Output: n_waypoints * 2 coordinates
+        )
+
     def forward(
         self,
         track_left: torch.Tensor,
@@ -43,7 +61,22 @@ class MLPPlanner(nn.Module):
         Returns:
             torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
         """
-        raise NotImplementedError
+        B = track_left.shape[0]
+        
+        # Flatten the left and right tracks
+        track_left_flat = track_left.reshape(B, -1)  # (b, n_track * 2)
+        track_right_flat = track_right.reshape(B, -1)  # (b, n_track * 2)
+        
+        # Concatenate left and right
+        x = torch.cat([track_left_flat, track_right_flat], dim=1)  # (b, 2 * n_track * 2)
+        
+        # Pass through MLP
+        out = self.mlp(x)  # (b, n_waypoints * 2)
+        
+        # Reshape to (b, n_waypoints, 2)
+        out = out.reshape(B, self.n_waypoints, 2)
+        
+        return out
 
 
 class TransformerPlanner(nn.Module):
@@ -57,8 +90,31 @@ class TransformerPlanner(nn.Module):
 
         self.n_track = n_track
         self.n_waypoints = n_waypoints
+        self.d_model = d_model
 
+        # Learned query embeddings for waypoints
         self.query_embed = nn.Embedding(n_waypoints, d_model)
+        
+        # Project input track points to d_model
+        # Input is (b, n_track, 2) -> we'll have 2 * n_track points total (left + right)
+        self.input_proj = nn.Linear(2, d_model)
+        
+        # Use TransformerDecoderLayer for cross-attention
+        # waypoints (queries) attend to track boundaries (keys/values)
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=d_model,
+            nhead=8,
+            dim_feedforward=256,
+            dropout=0.1,
+            batch_first=True
+        )
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=3
+        )
+        
+        # Project to output waypoints
+        self.output_proj = nn.Linear(d_model, 2)
 
     def forward(
         self,
@@ -79,7 +135,26 @@ class TransformerPlanner(nn.Module):
         Returns:
             torch.Tensor: future waypoints with shape (b, n_waypoints, 2)
         """
-        raise NotImplementedError
+        B = track_left.shape[0]
+        device = track_left.device
+        
+        # Concatenate left and right tracks: (b, 2 * n_track, 2)
+        track_points = torch.cat([track_left, track_right], dim=1)
+        
+        # Project to d_model: (b, 2 * n_track, d_model)
+        memory = self.input_proj(track_points)
+        
+        # Learned waypoint queries: (b, n_waypoints, d_model)
+        tgt = self.query_embed(torch.arange(self.n_waypoints, device=device))  # (n_waypoints, d_model)
+        tgt = tgt.unsqueeze(0).expand(B, -1, -1)  # (b, n_waypoints, d_model)
+        
+        # Cross-attention: waypoint queries attend to track boundaries
+        out = self.transformer_decoder(tgt, memory)  # (b, n_waypoints, d_model)
+        
+        # Project to waypoint coordinates: (b, n_waypoints, 2)
+        out = self.output_proj(out)
+        
+        return out
 
 
 class PatchEmbedding(nn.Module):
@@ -150,7 +225,26 @@ class TransformerBlock(nn.Module):
         """
         super().__init__()
 
-        raise NotImplementedError("TransformerBlock.__init__() is not implemented")
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim, 
+            num_heads, 
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        self.norm2 = nn.LayerNorm(embed_dim)
+        
+        mlp_hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim, embed_dim),
+            nn.Dropout(dropout)
+        )
+        
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -160,13 +254,27 @@ class TransformerBlock(nn.Module):
         Returns:
             (batch_size, sequence_length, embed_dim) output sequence
         """
-        raise NotImplementedError("TransformerBlock.forward() is not implemented")
+        # Self-attention block with residual connection
+        x_norm = self.norm1(x)
+        attn_out, _ = self.attn(x_norm, x_norm, x_norm)
+        x = x + self.dropout(attn_out)
+        
+        # MLP block with residual connection
+        x = x + self.dropout(self.mlp(self.norm2(x)))
+        
+        return x
 
 
 class ViTPlanner(torch.nn.Module):
     def __init__(
         self,
         n_waypoints: int = 3,
+        patch_size: int = 8,
+        embed_dim: int = 128,
+        num_layers: int = 6,
+        num_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        dropout: float = 0.1,
     ):
         """
         Vision Transformer (ViT) based planner that predicts waypoints from images.
@@ -198,11 +306,37 @@ class ViTPlanner(torch.nn.Module):
         super().__init__()
 
         self.n_waypoints = n_waypoints
-
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
+        
+        # Image size
+        h, w = 96, 128
+        num_patches = (h // patch_size) * (w // patch_size)
+        
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
 
-        raise NotImplementedError("ViTPlanner.__init__() is not implemented")
+        # Patch embedding
+        self.patch_embed = PatchEmbedding(h, w, patch_size, 3, embed_dim)
+        self.num_patches = num_patches
+        
+        # Learnable classification token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        
+        # Positional embeddings
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))  # +1 for cls token
+        
+        # Transformer blocks
+        self.blocks = nn.ModuleList([
+            TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout)
+            for _ in range(num_layers)
+        ])
+        
+        # Final normalization
+        self.norm = nn.LayerNorm(embed_dim)
+        
+        # Output projection for waypoints
+        self.head = nn.Linear(embed_dim, n_waypoints * 2)
 
     def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
         """
@@ -220,10 +354,39 @@ class ViTPlanner(torch.nn.Module):
         5. Extract features for prediction (e.g., [CLS] token or average pooling)
         6. Project to waypoint coordinates
         """
+        B = image.shape[0]
+        
+        # Normalize input image
         x = image
         x = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
-
-        raise NotImplementedError("ViTPlanner.forward() is not implemented")
+        
+        # Convert to patch embeddings: (b, num_patches, embed_dim)
+        x = self.patch_embed(x)
+        
+        # Add classification token: (b, num_patches + 1, embed_dim)
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+        
+        # Add positional embeddings
+        x = x + self.pos_embed
+        
+        # Pass through transformer blocks
+        for block in self.blocks:
+            x = block(x)
+        
+        # Final normalization
+        x = self.norm(x)
+        
+        # Use cls token for prediction: (b, embed_dim)
+        cls_feat = x[:, 0]
+        
+        # Project to waypoints: (b, n_waypoints * 2)
+        out = self.head(cls_feat)
+        
+        # Reshape to (b, n_waypoints, 2)
+        out = out.reshape(B, self.n_waypoints, 2)
+        
+        return out
 
 
 MODEL_FACTORY = {
