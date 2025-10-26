@@ -96,68 +96,92 @@ def validate(model, dataloader, criterion, device):
     return total_loss / num_batches, metric.compute()
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train a planner model")
-    parser.add_argument("--model", type=str, required=True, 
-                       choices=["mlp_planner", "transformer_planner", "vit_planner"],
-                       help="Model to train")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of data workers")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
-                       help="Device to use")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+def train(
+    model_name: str,
+    transform_pipeline: str = None,
+    num_workers: int = 4,
+    lr: float = 1e-3,
+    batch_size: int = 32,
+    num_epoch: int = 50,
+    device: str = None,
+    seed: int = 42,
+):
+    """
+    Train a planner model. This function can be called from Colab or other environments.
     
-    args = parser.parse_args()
+    Args:
+        model_name: Name of the model to train (e.g., "mlp_planner", "transformer_planner", "vit_planner")
+        transform_pipeline: Which transform pipeline to use ("default" or "state_only")
+        num_workers: Number of data loading workers
+        lr: Learning rate
+        batch_size: Batch size
+        num_epoch: Number of epochs
+        device: Device to use (None for auto-detect)
+        seed: Random seed
+    """
+    # Map model_name to expected format if needed
+    model_name_map = {
+        "linear_planner": "mlp_planner",
+        "mlp_planner": "mlp_planner",
+        "transformer_planner": "transformer_planner",
+        "vit_planner": "vit_planner",
+    }
+    
+    if model_name not in model_name_map:
+        raise ValueError(f"Unknown model_name: {model_name}. Use one of: {list(model_name_map.keys())}")
+    
+    model_key = model_name_map[model_name]
 
     # Set random seed
-    torch.manual_seed(args.seed)
+    torch.manual_seed(seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed(seed)
 
     # Setup device
-    device = torch.device(args.device)
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(device)
     print(f"Using device: {device}")
 
-    # Determine transform pipeline based on model
-    if args.model == "vit_planner":
-        transform_pipeline = "default"  # Needs images
-    else:
-        transform_pipeline = "state_only"  # Only needs track data
+    # Determine transform pipeline based on model if not explicitly set
+    if transform_pipeline is None:
+        if model_key == "vit_planner":
+            transform_pipeline = "default"  # ViT needs images
+        else:
+            transform_pipeline = "state_only"  # Others only need track data
 
     # Load data
     print("Loading data...")
     train_loader = load_data(
         dataset_path="./drive_data/train",
         transform_pipeline=transform_pipeline,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=args.num_workers
+        num_workers=num_workers
     )
 
     val_loader = load_data(
         dataset_path="./drive_data/val",
         transform_pipeline=transform_pipeline,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=args.num_workers
+        num_workers=num_workers
     )
 
     # Create model
-    print(f"Creating {args.model} model...")
-    model = MODEL_FACTORY[args.model]()
+    print(f"Creating {model_key} model...")
+    model = MODEL_FACTORY[model_key]()
     model = model.to(device)
 
     # Loss and optimizer
     criterion = nn.L1Loss()
-    optimizer = Adam(model.parameters(), lr=args.lr)
+    optimizer = Adam(model.parameters(), lr=lr)
 
     print("Starting training...")
     best_val_loss = float('inf')
 
-    for epoch in range(args.epochs):
-        print(f"\nEpoch {epoch+1}/{args.epochs}")
+    for epoch in range(num_epoch):
+        print(f"\nEpoch {epoch+1}/{num_epoch}")
         
         # Train
         train_loss, train_metrics = train_epoch(model, train_loader, optimizer, criterion, device)
@@ -177,6 +201,40 @@ def main():
             print(f"Saved best model to {save_path}")
 
     print("\nTraining complete!")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train a planner model")
+    parser.add_argument("--model", type=str, required=True, 
+                       choices=["mlp_planner", "transformer_planner", "vit_planner"],
+                       help="Model to train")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of data workers")
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
+                       help="Device to use")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    
+    args = parser.parse_args()
+
+    # Determine transform pipeline
+    if args.model == "vit_planner":
+        transform_pipeline = "default"  # Needs images
+    else:
+        transform_pipeline = "state_only"  # Only needs track data
+    
+    # Call the train function
+    train(
+        model_name=args.model,
+        transform_pipeline=transform_pipeline,
+        num_workers=args.num_workers,
+        lr=args.lr,
+        batch_size=args.batch_size,
+        num_epoch=args.epochs,
+        device=args.device,
+        seed=args.seed,
+    )
 
 
 if __name__ == "__main__":
