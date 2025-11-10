@@ -46,7 +46,12 @@ class Tokenizer(abc.ABC):
 class BSQ(torch.nn.Module):
     def __init__(self, codebook_bits: int, embedding_dim: int):
         super().__init__()
-        raise NotImplementedError()
+        self._codebook_bits = codebook_bits
+        self._embedding_dim = embedding_dim
+        # Down-projection: embedding_dim -> codebook_bits
+        self.down_proj = torch.nn.Linear(embedding_dim, codebook_bits)
+        # Up-projection: codebook_bits -> embedding_dim
+        self.up_proj = torch.nn.Linear(codebook_bits, embedding_dim)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -55,14 +60,20 @@ class BSQ(torch.nn.Module):
         - L2 normalization
         - differentiable sign
         """
-        raise NotImplementedError()
+        # Down-project
+        x = self.down_proj(x)
+        # L2 normalization
+        x = torch.nn.functional.normalize(x, p=2, dim=-1)
+        # Differentiable sign
+        x = diff_sign(x)
+        return x
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
         """
         Implement the BSQ decoder:
         - A linear up-projection into embedding_dim should suffice
         """
-        raise NotImplementedError()
+        return self.up_proj(x)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.decode(self.encode(x))
@@ -81,10 +92,19 @@ class BSQ(torch.nn.Module):
 
     def _code_to_index(self, x: torch.Tensor) -> torch.Tensor:
         x = (x >= 0).int()
-        return (x * 2 ** torch.arange(x.size(-1)).to(x.device)).sum(dim=-1)
+        # Use multiplication instead of bit shifting for Apple Silicon compatibility
+        powers = 2 ** torch.arange(x.size(-1), device=x.device, dtype=x.dtype)
+        return (x * powers).sum(dim=-1)
 
     def _index_to_code(self, x: torch.Tensor) -> torch.Tensor:
-        return 2 * ((x[..., None] & (2 ** torch.arange(self._codebook_bits).to(x.device))) > 0).float() - 1
+        # Use modulo and division instead of bitwise AND for Apple Silicon compatibility
+        x_long = x.long()
+        powers = 2 ** torch.arange(self._codebook_bits, device=x.device, dtype=torch.long)
+        # Extract bits: for each position, check if the corresponding power divides x
+        # This is equivalent to (x & (2**i)) > 0
+        x_expanded = x_long[..., None]  # (..., 1)
+        bits = ((x_expanded // powers) % 2).float()  # (..., codebook_bits)
+        return 2 * bits - 1
 
 
 class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
@@ -96,20 +116,29 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
     """
 
     def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 10):
-        super().__init__(patch_size=patch_size, latent_dim=latent_dim)
-        raise NotImplementedError()
+        # Initialize PatchAutoEncoder with bottleneck=latent_dim (BSQ will quantize this)
+        super().__init__(patch_size=patch_size, latent_dim=latent_dim, bottleneck=latent_dim)
+        self.codebook_bits = codebook_bits
+        # Create BSQ quantizer: quantizes latent_dim -> codebook_bits -> latent_dim
+        self.bsq = BSQ(codebook_bits, latent_dim)
 
     def encode_index(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # Encode image to patches, then quantize to indices
+        encoded = self.encode(x)  # (B, h, w, latent_dim)
+        return self.bsq.encode_index(encoded)
 
     def decode_index(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # Decode indices to patches, then decode patches to image
+        decoded_patches = self.bsq.decode_index(x)  # (B, h, w, latent_dim)
+        return self.decode(decoded_patches)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # Use parent's encode to get patch embeddings
+        return super().encode(x)
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # Use parent's decode to reconstruct image from patch embeddings
+        return super().decode(x)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
@@ -127,4 +156,20 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
                 ...
               }
         """
-        raise NotImplementedError()
+        # Encode to patches
+        encoded = self.encode(x)  # (B, h, w, latent_dim)
+        # Quantize through BSQ
+        quantized = self.bsq(encoded)  # (B, h, w, latent_dim)
+        # Decode to image
+        decoded = self.decode(quantized)
+        
+        # Monitor codebook usage
+        indices = self.encode_index(x)
+        cnt = torch.bincount(indices.flatten(), minlength=2**self.codebook_bits)
+        
+        additional_losses = {
+            "cb0": (cnt == 0).float().mean().detach(),
+            "cb2": (cnt <= 2).float().mean().detach(),
+        }
+        
+        return decoded, additional_losses
