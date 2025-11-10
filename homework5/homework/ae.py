@@ -200,7 +200,23 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         return decoded, {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        return self.encoder(x)
+        # Ensure input has batch dimension for BatchNorm
+        had_batch = x.dim() == 4
+        if not had_batch:
+            x = x.unsqueeze(0)  # (H, W, 3) -> (1, H, W, 3)
+        result = self.encoder(x)
+        # Remove batch dimension if original input didn't have one
+        if not had_batch and result.dim() == 4 and result.shape[0] == 1:
+            result = result.squeeze(0)  # (1, h, w, bottleneck) -> (h, w, bottleneck)
+        return result
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
-        return self.decoder(x)
+        # Ensure input has batch dimension for BatchNorm
+        had_batch = x.dim() == 4
+        if not had_batch:
+            x = x.unsqueeze(0)  # (h, w, bottleneck) -> (1, h, w, bottleneck)
+        result = self.decoder(x)
+        # Remove batch dimension if original input didn't have one
+        if not had_batch and result.dim() == 4 and result.shape[0] == 1:
+            result = result.squeeze(0)  # (1, H, W, 3) -> (H, W, 3)
+        return result
