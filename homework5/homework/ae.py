@@ -116,9 +116,13 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             super().__init__()
             # Patchify input: (B, H, W, 3) -> (B, h, w, latent_dim)
             self.patchify = PatchifyLinear(patch_size, latent_dim)
-            # Convolutional layers for patch interactions
+            # Convolutional layers for patch interactions with residual connections
             self.conv1 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn1 = torch.nn.BatchNorm2d(latent_dim)
             self.conv2 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn2 = torch.nn.BatchNorm2d(latent_dim)
+            self.conv3 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn3 = torch.nn.BatchNorm2d(latent_dim)
             # Project to bottleneck
             self.proj = torch.nn.Conv2d(latent_dim, bottleneck, 1)
 
@@ -127,9 +131,16 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             x = self.patchify(x)
             # Convert to CHW for conv operations
             x = hwc_to_chw(x)
-            # Apply convolutions with GeLU for interactions
-            x = torch.nn.functional.gelu(self.conv1(x))
-            x = torch.nn.functional.gelu(self.conv2(x))
+            # Apply convolutions with GeLU and residual connections
+            residual = x
+            x = torch.nn.functional.gelu(self.bn1(self.conv1(x)))
+            x = x + residual  # Residual connection
+            
+            residual = x
+            x = torch.nn.functional.gelu(self.bn2(self.conv2(x)))
+            x = x + residual  # Residual connection
+            
+            x = torch.nn.functional.gelu(self.bn3(self.conv3(x)))
             # Project to bottleneck
             x = self.proj(x)
             # Convert back to HWC
@@ -140,9 +151,13 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             super().__init__()
             # Project from bottleneck to latent_dim
             self.proj = torch.nn.Conv2d(bottleneck, latent_dim, 1)
-            # Convolutional layers for patch interactions
+            # Convolutional layers for patch interactions with residual connections
             self.conv1 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn1 = torch.nn.BatchNorm2d(latent_dim)
             self.conv2 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn2 = torch.nn.BatchNorm2d(latent_dim)
+            self.conv3 = torch.nn.Conv2d(latent_dim, latent_dim, 3, padding=1)
+            self.bn3 = torch.nn.BatchNorm2d(latent_dim)
             # Unpatchify: (B, h, w, latent_dim) -> (B, H, W, 3)
             self.unpatchify = UnpatchifyLinear(patch_size, latent_dim)
 
@@ -151,9 +166,16 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             x = hwc_to_chw(x)
             # Project from bottleneck
             x = self.proj(x)
-            # Apply convolutions with GeLU
-            x = torch.nn.functional.gelu(self.conv1(x))
-            x = torch.nn.functional.gelu(self.conv2(x))
+            # Apply convolutions with GeLU and residual connections
+            residual = x
+            x = torch.nn.functional.gelu(self.bn1(self.conv1(x)))
+            x = x + residual  # Residual connection
+            
+            residual = x
+            x = torch.nn.functional.gelu(self.bn2(self.conv2(x)))
+            x = x + residual  # Residual connection
+            
+            x = torch.nn.functional.gelu(self.bn3(self.conv3(x)))
             # Convert back to HWC
             x = chw_to_hwc(x)
             # Unpatchify to image
