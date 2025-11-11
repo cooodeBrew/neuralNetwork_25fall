@@ -134,12 +134,14 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             # Apply convolutions with GeLU and residual connections
             residual = x
             x = torch.nn.functional.gelu(self.bn1(self.conv1(x)))
-            x = x + residual  # Residual connection
+            # Residual connection
+            x = x + residual  
             
             residual = x
             x = torch.nn.functional.gelu(self.bn2(self.conv2(x)))
-            x = x + residual  # Residual connection
+            x = x + residual
             
+            # by cursor
             x = torch.nn.functional.gelu(self.bn3(self.conv3(x)))
             # Project to bottleneck
             x = self.proj(x)
@@ -169,11 +171,11 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
             # Apply convolutions with GeLU and residual connections
             residual = x
             x = torch.nn.functional.gelu(self.bn1(self.conv1(x)))
-            x = x + residual  # Residual connection
+            x = x + residual
             
             residual = x
             x = torch.nn.functional.gelu(self.bn2(self.conv2(x)))
-            x = x + residual  # Residual connection
+            x = x + residual
             
             x = torch.nn.functional.gelu(self.bn3(self.conv3(x)))
             # Convert back to HWC

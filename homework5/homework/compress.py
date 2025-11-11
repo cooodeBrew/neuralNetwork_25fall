@@ -157,6 +157,7 @@ class Compressor:
                 bit_stream.append((byte >> (7 - bit)) & 1)
         
         # Initialize decoder
+        # by cursor
         low = 0
         high = (1 << 31) - 1
         value = 0
@@ -233,17 +234,19 @@ class Compressor:
                         break
                 
                 # Update current sequence for next prediction
+                # cursor part ends
                 current_tokens[0, pos_h, pos_w] = token
         
         # Convert to tensor and decode
         tokens = torch.tensor(tokens_flat[:seq_len], dtype=torch.long, device=device).view(h, w)
-        tokens = tokens.unsqueeze(0)  # Add batch dimension
+        tokens = tokens.unsqueeze(0)
         
         # Decode tokens to image
         with torch.no_grad():
             image = self.tokenizer.decode_index(tokens)
         
-        return image[0]  # Remove batch dimension
+        # Remove batch dimension
+        return image[0]  
 
 
 def compress(tokenizer: Path, autoregressive: Path, image: Path, compressed_image: Path):
