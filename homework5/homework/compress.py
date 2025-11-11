@@ -19,7 +19,7 @@ class Compressor:
         """
         Compress the image into a torch.uint8 bytes stream (1D tensor).
 
-        Use arithmetic coding.
+        Use arithmetic coding with probability distributions from autoregressive model.
         """
         device = x.device
         self.autoregressive.eval()
@@ -29,23 +29,24 @@ class Compressor:
             tokens = self.tokenizer.encode_index(x.unsqueeze(0) if x.dim() == 3 else x)  # (B, h, w)
         
         if tokens.dim() == 3:
-            tokens = tokens[0]  # Remove batch dim if present
+            tokens = tokens[0] 
         
         h, w = tokens.shape
         tokens_flat = tokens.flatten().cpu().numpy().astype(np.int32)  # (seq_len,)
         seq_len = len(tokens_flat)
         
-        # Simple arithmetic coding using cumulative probabilities
-        # We'll use a simplified arithmetic coder
         result = bytearray()
         result.extend(self._int_to_bytes(h, 2))
         result.extend(self._int_to_bytes(w, 2))
         
-        # Get n_tokens from model
-        n_tokens = self.autoregressive.n_tokens if hasattr(self.autoregressive, 'n_tokens') else 2**10
+        # Arithmetic coding using range coder
+        # Use 31-bit precision to avoid overflow
+        low = 0
+        high = (1 << 31) - 1
+        pending_bits = 0
+        output_bits = []
         
         with torch.no_grad():
-            # Build sequence progressively for autoregressive prediction
             current_tokens = torch.zeros(1, h, w, dtype=torch.long, device=device)
             
             for i in range(seq_len):
@@ -56,33 +57,75 @@ class Compressor:
                 probs = torch.nn.functional.softmax(logits[0, pos_h, pos_w], dim=-1)
                 probs_np = probs.cpu().numpy()
                 
-                # Compute cumulative probabilities for arithmetic coding
-                cumprobs = np.cumsum(probs_np)
+                # Normalize probabilities to avoid numerical issues
+                probs_np = np.maximum(probs_np, 1e-10)
+                probs_np = probs_np / probs_np.sum()
+                
+                # Compute cumulative probabilities
+                cumprobs = np.cumsum(np.concatenate([[0.0], probs_np[:-1]]))
+                cumprobs_end = np.cumsum(probs_np)
+                
                 token = tokens_flat[i]
                 
-                # Encode token using arithmetic coding
-                # For simplicity, we'll use the probability to determine encoding length
-                # Higher probability = shorter encoding
-                prob = float(probs_np[token])
+                # Narrow range based on token probability
+                range_size = high - low + 1
+                token_low = low + int(range_size * cumprobs[token])
+                token_high = low + int(range_size * cumprobs_end[token]) - 1
                 
-                # Use variable-length encoding: more probable tokens use fewer bits
-                # Tokens can be up to 2^10 = 1024, so we need at least 2 bytes
-                # But we can use probability to optimize the encoding
-                if prob > 0.1 and token < 256:
-                    # High probability and small token: use 1 byte marker + 1 byte token
-                    result.append(0xFF)  # Marker for high prob
-                    result.append(int(token))
-                else:
-                    # Medium/low probability or large token: use 2 bytes
-                    # Use different markers to indicate probability for potential future optimization
-                    if prob > 0.01:
-                        result.append(0xFE)  # Marker for medium prob
+                # Ensure valid range
+                if token_high < token_low:
+                    token_high = token_low
+                
+                low = token_low
+                high = token_high
+                
+                # Output bits when range allows
+                while True:
+                    if high < (1 << 30):  # Top quarter
+                        # Output 0
+                        output_bits.append(0)
+                        for _ in range(pending_bits):
+                            output_bits.append(1)
+                        pending_bits = 0
+                        low = (low << 1) & ((1 << 31) - 1)
+                        high = ((high << 1) | 1) & ((1 << 31) - 1)
+                    elif low >= (1 << 30):  # Bottom quarter
+                        # Output 1
+                        output_bits.append(1)
+                        for _ in range(pending_bits):
+                            output_bits.append(0)
+                        pending_bits = 0
+                        low = ((low - (1 << 30)) << 1) & ((1 << 31) - 1)
+                        high = (((high - (1 << 30)) << 1) | 1) & ((1 << 31) - 1)
+                    elif low >= (1 << 29) and high < (3 << 29):  # Middle half
+                        # Underflow: increment pending
+                        pending_bits += 1
+                        low = ((low - (1 << 29)) << 1) & ((1 << 31) - 1)
+                        high = (((high - (1 << 29)) << 1) | 1) & ((1 << 31) - 1)
                     else:
-                        result.append(0xFD)  # Marker for low prob
-                    result.extend(self._int_to_bytes(int(token), 2))
+                        break
                 
                 # Update current sequence for next prediction
                 current_tokens[0, pos_h, pos_w] = token
+        
+        # Flush remaining bits
+        pending_bits += 1
+        if low < (1 << 29):
+            output_bits.append(0)
+            for _ in range(pending_bits):
+                output_bits.append(1)
+        else:
+            output_bits.append(1)
+            for _ in range(pending_bits):
+                output_bits.append(0)
+        
+        # Convert bits to bytes
+        for i in range(0, len(output_bits), 8):
+            byte = 0
+            for j in range(8):
+                if i + j < len(output_bits):
+                    byte |= (output_bits[i + j] << (7 - j))
+            result.append(byte)
         
         return bytes(result)
     
@@ -107,40 +150,89 @@ class Compressor:
         w = self._bytes_to_int(x[2:4])
         seq_len = h * w
         
-        # Decode tokens
+        # Convert bytes to bit stream
+        bit_stream = []
+        for byte in x[4:]:
+            for bit in range(8):
+                bit_stream.append((byte >> (7 - bit)) & 1)
+        
+        # Initialize decoder
+        low = 0
+        high = (1 << 31) - 1
+        value = 0
+        for i in range(min(31, len(bit_stream))):
+            value = (value << 1) | bit_stream[i]
+        bit_index = 31
+        
         tokens_flat = []
-        offset = 4  # Skip h, w (2 bytes each)
         
         with torch.no_grad():
             current_tokens = torch.zeros(1, h, w, dtype=torch.long, device=device)
             
             for i in range(seq_len):
-                if offset >= len(x):
-                    break
-                    
-                marker = x[offset]
-                offset += 1
+                pos_h, pos_w = i // w, i % w
                 
-                if marker == 0xFF:
-                    # High probability: 1 byte token (token < 256)
-                    token = x[offset]
-                    offset += 1
-                elif marker == 0xFE:
-                    # Medium probability: 2 bytes
-                    token = self._bytes_to_int(x[offset:offset+2])
-                    offset += 2
-                elif marker == 0xFD:
-                    # Low probability: 2 bytes
-                    token = self._bytes_to_int(x[offset:offset+2])
-                    offset += 2
-                else:
-                    # Fallback: treat as 1 byte token (backward compatibility)
-                    token = marker
+                # Get probability distribution
+                logits, _ = self.autoregressive(current_tokens)
+                probs = torch.nn.functional.softmax(logits[0, pos_h, pos_w], dim=-1)
+                probs_np = probs.cpu().numpy()
+                
+                # Normalize probabilities
+                probs_np = np.maximum(probs_np, 1e-10)
+                probs_np = probs_np / probs_np.sum()
+                
+                # Compute cumulative probabilities
+                cumprobs = np.cumsum(np.concatenate([[0.0], probs_np[:-1]]))
+                cumprobs_end = np.cumsum(probs_np)
+                
+                # Find token that matches current value
+                range_size = high - low + 1
+                scaled_value = (value - low) / range_size
+                
+                token = 0
+                for t in range(len(probs_np)):
+                    if cumprobs[t] <= scaled_value < cumprobs_end[t]:
+                        token = t
+                        break
                 
                 tokens_flat.append(token)
                 
-                # Update sequence for next prediction
-                pos_h, pos_w = i // w, i % w
+                # Narrow range
+                token_low = low + int(range_size * cumprobs[token])
+                token_high = low + int(range_size * cumprobs_end[token]) - 1
+                
+                if token_high < token_low:
+                    token_high = token_low
+                
+                low = token_low
+                high = token_high
+                
+                # Expand range and read more bits
+                while True:
+                    if high < (1 << 30):
+                        low = (low << 1) & ((1 << 31) - 1)
+                        high = ((high << 1) | 1) & ((1 << 31) - 1)
+                        if bit_index < len(bit_stream):
+                            value = ((value << 1) | bit_stream[bit_index]) & ((1 << 31) - 1)
+                            bit_index += 1
+                    elif low >= (1 << 30):
+                        low = ((low - (1 << 30)) << 1) & ((1 << 31) - 1)
+                        high = (((high - (1 << 30)) << 1) | 1) & ((1 << 31) - 1)
+                        if bit_index < len(bit_stream):
+                            value = (((value - (1 << 30)) << 1) | bit_stream[bit_index]) & ((1 << 31) - 1)
+                            value += (1 << 30)
+                            bit_index += 1
+                    elif low >= (1 << 29) and high < (3 << 29):
+                        low = ((low - (1 << 29)) << 1) & ((1 << 31) - 1)
+                        high = (((high - (1 << 29)) << 1) | 1) & ((1 << 31) - 1)
+                        if bit_index < len(bit_stream):
+                            value = (((value - (1 << 29)) << 1) | bit_stream[bit_index]) & ((1 << 31) - 1)
+                            value += (1 << 29)
+                            bit_index += 1
+                    else:
+                        break
+                
+                # Update current sequence for next prediction
                 current_tokens[0, pos_h, pos_w] = token
         
         # Convert to tensor and decode
