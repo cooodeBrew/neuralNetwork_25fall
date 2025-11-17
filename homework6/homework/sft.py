@@ -8,7 +8,7 @@ class SFTModel(BaseLLM):
         SFT models are trained on raw questions without chat templates.
         Return the question as-is.
         """
-        raise NotImplementedError()
+        return question
 
 
 def load() -> SFTModel:
@@ -58,7 +58,10 @@ def format_example(prompt: str, answer: str) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
     """
-    raise NotImplementedError()
+    # Round the answer to 3 decimal places to make it easier for the LLM
+    rounded_answer = round(answer, 3)
+    formatted_answer = f"<answer>{rounded_answer}</answer>"
+    return {"question": prompt, "answer": formatted_answer}
 
 
 class TokenizedDataset:
@@ -87,7 +90,60 @@ def train_model(
     output_dir: str = "./homework/sft_model",
     **kwargs,
 ):
-    raise NotImplementedError()
+    from pathlib import Path
+    
+    from peft import LoraConfig, get_peft_model
+    from transformers import Trainer, TrainingArguments
+    
+    train_dataset = Dataset("train")
+    
+    model = SFTModel()
+    
+    # Using r=16 to keep model size below 20MB (can adjust if needed)
+    lora_config = LoraConfig(
+        r=16,  # rank
+        lora_alpha=64,  # 4 * r
+        target_modules="all-linear",
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    
+    # Convert model to LoRA
+    model.model = get_peft_model(model.model, lora_config)
+    
+    if model.device.type == "cuda":
+        model.model.enable_input_require_grads()
+    
+    tokenized_dataset = TokenizedDataset(
+        tokenizer=model.tokenizer,
+        data=train_dataset,
+        format_fn=format_example
+    )
+    
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        logging_dir=output_dir,
+        report_to="tensorboard",
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
+        learning_rate=5e-4,
+        gradient_checkpointing=True,
+        save_strategy="epoch",
+        save_total_limit=1,  # Only keep the last checkpoint to save space
+    )
+    
+    trainer = Trainer(
+        model=model.model,
+        args=training_args,
+        train_dataset=tokenized_dataset,
+    )
+    
+    trainer.train()
+    
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    trainer.save_model(str(output_path))
+    
     test_model(output_dir)
 
 

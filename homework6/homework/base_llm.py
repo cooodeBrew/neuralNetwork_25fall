@@ -28,7 +28,9 @@ class BaseLLM:
         This would be a default implementation applies a basic chat template.
         Override this in subclasses for different behavior (e.g., SFT/RFT models should return raw questions).
         """
-        raise NotImplementedError()
+        # For BaseLLM, just return the question as-is
+        # Subclasses (like CoTModel) will override this to use chat templates
+        return question
 
     def parse_answer(self, answer: str) -> float:
         """
@@ -52,8 +54,8 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        raise NotImplementedError()
-        # return self.batched_generate([prompt])[0]   # If you feel confident, just use this line of code and move straight to batched_generate.
+        # Use batched_generate for simplicity (it handles single prompts too)
+        return self.batched_generate([prompt])[0]
 
     @overload
     def batched_generate(
@@ -114,20 +116,79 @@ class BaseLLM:
         # If you run out of memory, try to reduce the micro_batch_size.
         micro_batch_size = 32
         if len(prompts) > micro_batch_size:
-            return [
-                r
-                for idx in tqdm(
-                    range(0, len(prompts), micro_batch_size),
-                    desc=f"LLM Running on Micro Batches {micro_batch_size}",
-                )
-                for r in self.batched_generate(
+            results = []
+            for idx in tqdm(
+                range(0, len(prompts), micro_batch_size),
+                desc=f"LLM Running on Micro Batches {micro_batch_size}",
+            ):
+                batch_results = self.batched_generate(
                     prompts[idx : idx + micro_batch_size],
                     num_return_sequences,
                     temperature,
                 )
-            ]
+                results.extend(batch_results)
+            return results
 
-        raise NotImplementedError()
+        # Apply format_prompt to all prompts
+        formatted_prompts = [self.format_prompt(prompt) for prompt in prompts]
+        
+        # Set padding side to left for generation (aligns sequences on the right)
+        original_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        
+        # Tokenize with padding
+        inputs = self.tokenizer(
+            formatted_prompts,
+            padding=True,
+            return_tensors="pt"
+        )
+        # Move inputs to device
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        
+        # Determine if we should use sampling
+        do_sample = temperature > 0
+        
+        # Prepare generation parameters
+        generation_kwargs = {
+            "max_new_tokens": 50,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "do_sample": do_sample,
+        }
+        
+        if do_sample:
+            generation_kwargs["temperature"] = temperature
+        
+        # Handle num_return_sequences
+        if num_return_sequences is not None:
+            generation_kwargs["num_return_sequences"] = num_return_sequences
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                **generation_kwargs
+            )
+        
+        # Restore original padding side
+        self.tokenizer.padding_side = original_padding_side
+        
+        # Decode only the generated tokens (exclude input tokens)
+        input_length = inputs["input_ids"].shape[1]
+        generated_tokens = outputs[:, input_length:]
+        decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        
+        # Reshape if num_return_sequences is specified
+        if num_return_sequences is not None:
+            # Reshape from flat list to list of lists
+            result = []
+            for i in range(len(prompts)):
+                start_idx = i * num_return_sequences
+                end_idx = start_idx + num_return_sequences
+                result.append(decoded_outputs[start_idx:end_idx])
+            return result
+        else:
+            return decoded_outputs
 
     def answer(self, *questions) -> list[float]:
         """
