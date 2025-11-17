@@ -111,7 +111,8 @@ def train_model(
     # Convert model to LoRA
     model.model = get_peft_model(model.model, lora_config)
     
-    if model.device.type == "cuda":
+    # Enable input require grads for gradient checkpointing (GPU fix)
+    if model.device == "cuda":
         model.model.enable_input_require_grads()
     
     tokenized_dataset = TokenizedDataset(

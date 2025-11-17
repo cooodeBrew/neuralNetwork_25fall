@@ -66,7 +66,7 @@ def train_model(
     model.model = get_peft_model(model.model, lora_config)
     
     # Enable input require grads for gradient checkpointing (GPU fix)
-    if model.device.type == "cuda":
+    if model.device == "cuda":
         model.model.enable_input_require_grads()
     
     # Format function for RFT data: [question, answer, reasoning]
