@@ -142,14 +142,13 @@ def train_model(
     # Set up training arguments
     # Disable gradient checkpointing on CPU (it's slower and not needed)
     # On GPU, keep it enabled to save memory
-    if 'gradient_checkpointing' not in kwargs:
-        kwargs['gradient_checkpointing'] = llm.device != "cpu"
+    gradient_checkpointing = kwargs.pop('gradient_checkpointing', llm.device != "cpu")
     
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        gradient_checkpointing=kwargs.get('gradient_checkpointing', True),  # Save GPU memory, but disable on CPU
+        gradient_checkpointing=gradient_checkpointing,  # Save GPU memory, but disable on CPU
         learning_rate=5e-4,
         num_train_epochs=5,
         per_device_train_batch_size=32,
