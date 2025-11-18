@@ -154,6 +154,7 @@ class BaseLLM:
             "do_sample": do_sample,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
+            "repetition_penalty": 1.1,  # Reduce repetition
         }
         
         if temperature > 0:
@@ -175,7 +176,8 @@ class BaseLLM:
         # Decode only the generated tokens (not the input)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+        # Skip special tokens for cleaner output, but keep them if needed for parsing
+        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
         
         # Reshape if num_return_sequences is specified
         if num_return_sequences is not None:
