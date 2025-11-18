@@ -84,10 +84,13 @@ class BaseLLM:
         
         # Decode only the generated tokens (exclude input tokens)
         generated_tokens = outputs[0, input_ids.shape[1]:]
-        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Don't skip special tokens - they might be important for the loss calculation
+        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
         
-        # Ensure we return a non-empty string (fallback to empty string if decoding fails)
-        return decoded_output if decoded_output else ""
+        # Remove leading/trailing whitespace but keep the content
+        decoded_output = decoded_output.strip()
+        
+        return decoded_output
 
     @overload
     def batched_generate(
@@ -209,7 +212,10 @@ class BaseLLM:
         # Decode only the generated tokens (exclude input tokens)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        # Don't skip special tokens - they might be important for the loss calculation
+        decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+        # Strip whitespace from each output
+        decoded_outputs = [out.strip() for out in decoded_outputs]
         
         # Reshape if num_return_sequences is specified
         if num_return_sequences is not None:

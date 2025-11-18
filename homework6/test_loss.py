@@ -58,7 +58,7 @@ def test_generate_loss():
         if i < 3:  # Print first 3 examples
             print(f"\nExample {i+1}:")
             print(f"  Question: {question}")
-            print(f"  Generated: {answer[:100]}...")  # First 100 chars
+            print(f"  Generated (length {len(answer)}): {repr(answer)}")  # Show full output with repr
     
     # Compute loss
     full_texts = [questions[i] + answers[i] for i in range(len(questions))]
@@ -104,7 +104,7 @@ def test_batched_generate_loss():
     for i in range(min(3, len(questions))):
         print(f"\nExample {i+1}:")
         print(f"  Question: {questions[i]}")
-        print(f"  Generated: {answers[i][:100]}...")  # First 100 chars
+        print(f"  Generated (length {len(answers[i])}): {repr(answers[i])}")  # Show full output with repr
     
     # Compute loss
     full_texts = [questions[i] + answers[i] for i in range(len(questions))]
