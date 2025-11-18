@@ -54,8 +54,28 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Use batched_generate for simplicity (it handles single prompts too)
-        return self.batched_generate([prompt])[0]
+        # Apply format_prompt to the input prompt
+        formatted_prompt = self.format_prompt(prompt)
+        
+        # Tokenize the prompt
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
+        # Move to device
+        input_ids = inputs["input_ids"].to(self.device)
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=input_ids,
+                max_new_tokens=50,
+                eos_token_id=self.tokenizer.eos_token_id,
+                do_sample=False,  # Greedy decoding for single generation
+            )
+        
+        # Decode only the generated tokens (exclude input tokens)
+        generated_tokens = outputs[0, input_ids.shape[1]:]
+        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        return decoded_output
 
     @overload
     def batched_generate(
