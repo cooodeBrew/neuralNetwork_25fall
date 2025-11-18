@@ -2,7 +2,6 @@ from typing import overload
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from typing import List
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
@@ -18,7 +17,7 @@ device = (
 class BaseLLM:
     def __init__(self, checkpoint=checkpoint):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-        # Set pad_token if not already set (some models use eos_token as pad_token)
+        # Set pad_token if not already set
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
@@ -32,8 +31,7 @@ class BaseLLM:
         This would be a default implementation applies a basic chat template.
         Override this in subclasses for different behavior (e.g., SFT/RFT models should return raw questions).
         """
-        # For BaseLLM, just return the question as-is
-        # Subclasses (like CoTModel) will override this to use chat templates
+        # Basic implementation for testing - just return the question
         return question
 
     def parse_answer(self, answer: str) -> float:
@@ -58,10 +56,7 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Use batched_generate for consistency - it generates the same way and has better loss
-        # This ensures generate() and batched_generate() produce identical results
-        results = self.batched_generate([prompt])
-        return results[0] if results else ""
+        return self.batched_generate([prompt])[0]
 
     @overload
     def batched_generate(
@@ -84,46 +79,113 @@ class BaseLLM:
         This version returns a list of generation for each prompt.
         """
 
-    def batched_generate(self, prompts: List[str]) -> List[str]:
+    def batched_generate(
+        self,
+        prompts: list[str],
+        num_return_sequences: int | None = None,
+        temperature: float = 0,
+    ) -> list[str] | list[list[str]]:
         """
-        Generate outputs for a batch of prompts.
-        Ensures identical behavior to generate() and correct handling of left padding.
-        """
+        Batched version of `generate` method.
 
-        # 1. Format prompts
+        You will likely get an up to 10x speedup using batched decoding.
+
+        To implement batch decoding you will need to:
+        - apply format_prompt to the input prompts
+        - tokenize the prompts self.tokenizer with padding=True and return_tensors="pt"
+        - call self.model.generate
+        - decode the outputs with self.tokenizer.batch_decode
+
+        Tip: You need to set self.tokenizer.padding_side = "left" to get the correct padding behavior for generation.
+             Left padding makes sure all sequences are aligned to the right (i.e. where tokens are generated).
+        Tip: self.model.generate takes a lot of parameters. Here are some relevant ones:
+            - max_new_tokens: The maximum number of tokens to generate. Set this to a reasonable value
+                              (50 should suffice).
+            - do_sample and temperature: For any temperature > 0, set do_sample=True.
+                                         do_sample=False will use greedy decoding.
+            - num_return_sequences: The number of sequences to return. Note that this will generate a flat
+                                    list of len(prompts) * num_return_sequences entries.
+            - eos_token_id: The end of sequence token id. This is used to stop generation. Set this
+                            to self.tokenizer.eos_token_id.
+        Pro Tip: Only batch_decode generated tokens by masking out the inputs with
+                 outputs[:, len(inputs["input_ids"][0]) :]
+        """
+        from tqdm import tqdm  # Importing tqdm for progress bar
+
+        # Preventing OOM
+        # Depending on your GPU batched generation will use a lot of memory.
+        # If you run out of memory, try to reduce the micro_batch_size.
+        micro_batch_size = 32
+        if len(prompts) > micro_batch_size:
+            results = []
+            for idx in tqdm(
+                range(0, len(prompts), micro_batch_size),
+                desc=f"LLM Running on Micro Batches {micro_batch_size}",
+            ):
+                batch_results = self.batched_generate(
+                    prompts[idx : idx + micro_batch_size],
+                    num_return_sequences,
+                    temperature,
+                )
+                if num_return_sequences is not None:
+                    results.extend(batch_results)
+                else:
+                    results.extend(batch_results)
+            return results
+
+        # Format prompts
         formatted_prompts = [self.format_prompt(p) for p in prompts]
-
-        # 2. Tokenize (left padding)
+        
+        # Set padding side to left for generation
+        original_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        
+        # Tokenize with padding
         inputs = self.tokenizer(
             formatted_prompts,
-            return_tensors="pt",
             padding=True,
-            truncation=False,
-        ).to(self.model.device)
-
-        # Store the true prompt lengths (number of non-padding tokens)
-        attention_mask = inputs["attention_mask"]
-        prompt_lens = attention_mask.sum(dim=1).tolist()
-
-        # 3. Call model.generate
-        outputs = self.model.generate(
-            **inputs,
-            max_new_tokens=self.max_new_tokens,
-            do_sample=False,
-        )
-
-        # 4. Extract the newly generated tokens per sample
-        results = []
-        for i, prompt_len in enumerate(prompt_lens):
-            # Slice exactly from the end of the prompt
-            gen_tokens = outputs[i, prompt_len:]
-
-            # Decode
-            text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
-
-            results.append(text)
-
-        return results
+            return_tensors="pt"
+        ).to(self.device)
+        
+        # Generate
+        do_sample = temperature > 0
+        generate_kwargs = {
+            "max_new_tokens": 50,
+            "do_sample": do_sample,
+            "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
+        }
+        
+        if temperature > 0:
+            generate_kwargs["temperature"] = temperature
+        
+        if num_return_sequences is not None:
+            generate_kwargs["num_return_sequences"] = num_return_sequences
+        
+        with torch.no_grad():
+            outputs = self.model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                **generate_kwargs
+            )
+        
+        # Restore original padding side
+        self.tokenizer.padding_side = original_padding_side
+        
+        # Decode only the generated tokens (not the input)
+        input_length = inputs["input_ids"].shape[1]
+        generated_tokens = outputs[:, input_length:]
+        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+        
+        # Reshape if num_return_sequences is specified
+        if num_return_sequences is not None:
+            # Reshape from flat list to list of lists
+            result = []
+            for i in range(len(prompts)):
+                result.append(decoded[i * num_return_sequences:(i + 1) * num_return_sequences])
+            return result
+        else:
+            return decoded
 
     def answer(self, *questions) -> list[float]:
         """

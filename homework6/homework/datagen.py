@@ -1,54 +1,66 @@
-def generate_dataset(output_json: str, oversample: int = 10, temperature: float = 0.6):
+def generate_dataset(output_json: str = "rft.json", oversample: int = 10, temperature: float = 0.6):
     import json
     from pathlib import Path
-    
     from .cot import CoTModel
     from .data import Dataset, is_answer_valid
     
-    train_dataset = Dataset("train")
+    # Use the larger model for better rollouts
+    checkpoint = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
     
-    model = CoTModel()
+    # Create CoT model with the larger checkpoint
+    class CoTModelLarge(CoTModel):
+        def __init__(self):
+            from .base_llm import device
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+            # Set pad_token if not already set
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
+            self.device = device
     
-    generated_data = []
+    model = CoTModelLarge()
+    model.model.eval()
     
-    print(f"Generating RFT dataset with oversample={oversample}, temperature={temperature}")
+    # Load training data
+    train_data = Dataset("train")
     
-    for idx, (question, correct_answer) in enumerate(train_dataset):
-        if idx % 10 == 0:
-            print(f"Processing {idx}/{len(train_dataset)} examples...")
-        
-        generations = model.batched_generate(
+    # Generate dataset
+    rft_data = []
+    
+    for question, correct_answer in train_data:
+        # Generate multiple completions
+        completions = model.batched_generate(
             [question],
             num_return_sequences=oversample,
             temperature=temperature
-        )
+        )[0]  # Get the list of completions for this question
         
-        completions = generations[0]
-        
-        # Find the best completion with a correct answer
-        # Try all completions and pick the first valid one
+        # Find the first correct answer
         found_correct = False
         for completion in completions:
+            # Parse the answer from the completion
             parsed_answer = model.parse_answer(completion)
             
-            # Check if answer is valid (not NaN and matches correct answer)
-            if parsed_answer == parsed_answer and is_answer_valid(parsed_answer, correct_answer):
-                generated_data.append([question, correct_answer, completion])
+            # Check if the answer is valid
+            if is_answer_valid(parsed_answer, correct_answer):
+                # Found a correct answer, add to dataset
+                rft_data.append([question, correct_answer, completion])
                 found_correct = True
                 break
         
+        # If no correct answer found, skip this data point
         if not found_correct:
-            # Skip this data point if no correct answer found
             continue
     
-    output_path = Path(output_json)
+    # Save to JSON file
+    output_path = Path(__file__).parent.parent / "data" / output_json
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    with output_path.open("w") as f:
-        json.dump(generated_data, f, indent=2)
+    with open(output_path, 'w') as f:
+        json.dump(rft_data, f, indent=2)
     
-    print(f"Generated {len(generated_data)} examples out of {len(train_dataset)}")
-    print(f"Saved to {output_json}")
+    print(f"Generated {len(rft_data)} examples and saved to {output_path}")
 
 
 if __name__ == "__main__":

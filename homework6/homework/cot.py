@@ -11,7 +11,7 @@ class CoTModel(BaseLLM):
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant that converts units. Be concise and provide your answer in the format <answer>value</answer>."
+                "content": "You are a helpful assistant that performs unit conversions. Be concise and provide your answer in the format <answer>value</answer>."
             },
             {
                 "role": "user",
@@ -27,15 +27,14 @@ class CoTModel(BaseLLM):
             }
         ]
         
-        # Apply chat template with add_generation_prompt=True to get the formatted prompt
-        # tokenize=False returns a string instead of tokenized input
-        formatted_prompt = self.tokenizer.apply_chat_template(
+        # Apply chat template
+        formatted = self.tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
             tokenize=False
         )
         
-        return formatted_prompt
+        return formatted
 
 
 def load() -> CoTModel:

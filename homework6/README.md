@@ -68,7 +68,7 @@ The LLM will do best if you give it:
 Use the `self.tokenizer.apply_chat_template` with `add_generation_prompt=True` and `tokenize=False` to convert the chat messages into a single string following the chat-template SmolLM2 expects (including all special tokens, and the beginning of the assistant output).git 
 Feel free to print this output to familiarize yourself with how this works.
 
-Test your model with
+Test your model withfi
 
 ```bash
 python -m homework.cot test

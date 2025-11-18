@@ -32,104 +32,98 @@ def train_model(
 ):
     import json
     from pathlib import Path
-    
     from peft import LoraConfig, get_peft_model
     from transformers import Trainer, TrainingArguments
+    from .sft import TokenizedDataset, tokenize
     
-    from .sft import tokenize
+    # Load RFT data from JSON file
+    data_path = Path(__file__).parent.parent / "data" / "rft.json"
+    if not data_path.exists():
+        raise FileNotFoundError(f"RFT data file not found at {data_path}. Please run datagen.py first.")
     
-    # Load RFT dataset
-    rft_data_path = Path(__file__).parent.parent / "data" / "rft.json"
-    if not rft_data_path.exists():
-        raise FileNotFoundError(
-            f"RFT dataset not found at {rft_data_path}. "
-            "Please run 'python -m homework.datagen data/rft.json' first."
-        )
-    
-    with rft_data_path.open() as f:
+    with open(data_path, 'r') as f:
         rft_data = json.load(f)
     
-    # Initialize model
-    model = RFTModel()
-    
-    # Configure LoRA (can use slightly larger rank for RFT)
-    # Using r=32 to allow for better performance while staying under 50MB
-    lora_config = LoraConfig(
-        r=32,  # rank (larger than SFT for better performance)
-        lora_alpha=128,  # 4 * r
-        target_modules="all-linear",
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    
-    # Convert model to LoRA
-    model.model = get_peft_model(model.model, lora_config)
-    
-    # Enable input require grads for gradient checkpointing (GPU fix)
-    if model.device == "cuda":
-        model.model.enable_input_require_grads()
-    
-    # Format function for RFT data: [question, answer, reasoning]
-    def format_rft_example(question: str, answer: float, reasoning: str) -> dict[str, str]:
-        """
-        Format RFT example: question + reasoning (which includes the answer)
-        The reasoning already contains <answer>...</answer>, so we use it directly
-        """
-        return {"question": question, "answer": reasoning}
-    
-    # Create a simple dataset wrapper for RFT data
-    # by cursor
+    # Create a Dataset-like object for RFT data
     class RFTDataset:
-        def __init__(self, data, format_fn):
+        def __init__(self, data):
             self.data = data
-            self.format_fn = format_fn
         
         def __len__(self):
             return len(self.data)
         
         def __getitem__(self, idx):
             # RFT data format: [question, answer, reasoning]
-            question, answer, reasoning = self.data[idx]
-            formatted_data = self.format_fn(question, answer, reasoning)
-            return tokenize(model.tokenizer, **formatted_data)
+            return self.data[idx]
+    
+    train_data = RFTDataset(rft_data)
+    
+    # Initialize model
+    llm = RFTModel()
+    
+    # Set up LoRA configuration - slightly larger for RFT
+    # Use r=32 to allow for better reasoning capabilities (still keep under 50MB total)
+    lora_config = LoraConfig(
+        target_modules="all-linear",
+        bias="none",
+        task_type="CAUSAL_LM",
+        r=32,  # Larger rank for better reasoning
+        lora_alpha=128,  # About 4x the rank
+        lora_dropout=0.1,
+    )
+    
+    # Convert model to LoRA
+    llm.model = get_peft_model(llm.model, lora_config)
+    
+    # Enable input require grads to avoid gradient checkpointing bug
+    if llm.device != "cpu":
+        llm.model.enable_input_require_grads()
+    
+    # Format function for RFT data
+    # RFT data format: [question, answer, reasoning]
+    # We use the reasoning (which includes the answer) as the training target
+    def format_rft_example(question: str, answer: float, reasoning: str) -> dict[str, str]:
+        # The reasoning already contains the answer in <answer> tags
+        # So we can use it directly
+        return {"question": question, "answer": reasoning}
     
     # Create tokenized dataset
-    tokenized_dataset = RFTDataset(
-        data=rft_data,
+    tokenized_dataset = TokenizedDataset(
+        tokenizer=llm.tokenizer,
+        data=train_data,
         format_fn=format_rft_example
     )
     
-    # Training arguments
-    # RFT might need slightly more training or different learning rate
+    # Set up training arguments
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        num_train_epochs=6,  # Slightly more epochs for better performance
-        per_device_train_batch_size=32,
-        learning_rate=3e-4,  # Slightly lower learning rate for more stable training
         gradient_checkpointing=True,
+        learning_rate=5e-4,
+        num_train_epochs=5,
+        per_device_train_batch_size=32,
         save_strategy="epoch",
-        save_total_limit=1,  # Only keep the last checkpoint to save space
-        warmup_steps=50,  # Add warmup for better convergence
+        logging_steps=10,
+        **kwargs
     )
     
     # Create trainer
     trainer = Trainer(
-        model=model.model,
+        model=llm.model,
         args=training_args,
         train_dataset=tokenized_dataset,
     )
     
+    # Train
     trainer.train()
     
     # Save the final model
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    output_path = Path(__file__).parent / "rft_model"
     trainer.save_model(str(output_path))
     
     # Test the model
-    test_model(output_dir)
+    test_model(str(output_path))
 
 
 if __name__ == "__main__":

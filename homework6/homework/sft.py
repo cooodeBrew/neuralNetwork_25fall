@@ -58,7 +58,7 @@ def format_example(prompt: str, answer: str) -> dict[str, str]:
     """
     Construct a question / answer pair. Consider rounding the answer to make it easier for the LLM.
     """
-    # Round the answer to 3 decimal places to make it easier for the LLM
+    # Round the answer to make it easier for the LLM
     rounded_answer = round(answer, 3)
     formatted_answer = f"<answer>{rounded_answer}</answer>"
     return {"question": prompt, "answer": formatted_answer}
@@ -91,61 +91,70 @@ def train_model(
     **kwargs,
 ):
     from pathlib import Path
-    
     from peft import LoraConfig, get_peft_model
     from transformers import Trainer, TrainingArguments
     
-    train_dataset = Dataset("train")
+    # Load data
+    train_data = Dataset("train")
     
-    model = SFTModel()
+    # Initialize model
+    llm = SFTModel()
     
-    # Using r=16 to keep model size below 20MB (can adjust if needed)
+    # Set up LoRA configuration
+    # Use r=16 to keep model size below 20MB (r=16, alpha=64 gives reasonable size)
     lora_config = LoraConfig(
-        r=16,  # rank
-        lora_alpha=64,  # 4 * r
         target_modules="all-linear",
         bias="none",
         task_type="CAUSAL_LM",
+        r=16,  # Rank - adjust to keep model size < 20MB
+        lora_alpha=64,  # About 4x the rank
+        lora_dropout=0.1,
     )
     
     # Convert model to LoRA
-    model.model = get_peft_model(model.model, lora_config)
+    llm.model = get_peft_model(llm.model, lora_config)
     
-    # Enable input require grads for gradient checkpointing (GPU fix)
-    if model.device == "cuda":
-        model.model.enable_input_require_grads()
+    # Enable input require grads to avoid gradient checkpointing bug
+    if llm.device != "cpu":
+        llm.model.enable_input_require_grads()
     
+    # Create tokenized dataset
     tokenized_dataset = TokenizedDataset(
-        tokenizer=model.tokenizer,
-        data=train_dataset,
+        tokenizer=llm.tokenizer,
+        data=train_data,
         format_fn=format_example
     )
     
+    # Set up training arguments
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
+        gradient_checkpointing=True,
+        learning_rate=5e-4,
         num_train_epochs=5,
         per_device_train_batch_size=32,
-        learning_rate=5e-4,
-        gradient_checkpointing=True,
         save_strategy="epoch",
-        save_total_limit=1,  # Only keep the last checkpoint to save space
+        logging_steps=10,
+        **kwargs
     )
     
+    # Create trainer
     trainer = Trainer(
-        model=model.model,
+        model=llm.model,
         args=training_args,
         train_dataset=tokenized_dataset,
     )
     
+    # Train
     trainer.train()
     
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    # Save the final model
+    output_path = Path(__file__).parent / "sft_model"
     trainer.save_model(str(output_path))
     
-    test_model(output_dir)
+    # Test the model
+    test_model(str(output_path))
 
 
 def test_model(ckpt_path: str):
