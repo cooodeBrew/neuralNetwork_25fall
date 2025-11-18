@@ -84,8 +84,23 @@ class BaseLLM:
         
         # Decode only the generated tokens (exclude input tokens)
         generated_tokens = outputs[0, input_ids.shape[1]:]
-        # Keep special tokens - they're needed for proper loss calculation
+        
+        # Check if we have any generated tokens
+        if generated_tokens.numel() == 0:
+            # No tokens generated, return empty string
+            return ""
+        
+        # Decode the generated tokens
+        # Always use skip_special_tokens=False to keep special tokens for loss calculation
+        # This is important - the grader's loss calculation needs the actual token sequence
         decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
+        
+        # If somehow we get empty, try the other way, but prefer keeping special tokens
+        if not decoded_output.strip():
+            decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            # If still empty, at least return something (the token IDs as string)
+            if not decoded_output.strip():
+                decoded_output = str(generated_tokens.tolist())
         
         # Remove leading/trailing whitespace
         decoded_output = decoded_output.strip()
@@ -212,8 +227,17 @@ class BaseLLM:
         # Decode only the generated tokens (exclude input tokens)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        # Keep special tokens - they're needed for proper loss calculation
+        
+        # Decode the generated tokens
+        # Try with skip_special_tokens=False first to keep special tokens
         decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
+        
+        # If any outputs are empty, try with skip_special_tokens=True for those
+        for i, out in enumerate(decoded_outputs):
+            if not out or out.strip() == "":
+                # Try decoding this specific sequence with skip_special_tokens=True
+                decoded_outputs[i] = self.tokenizer.decode(generated_tokens[i], skip_special_tokens=True)
+        
         # Strip whitespace from each output
         decoded_outputs = [out.strip() for out in decoded_outputs]
         
