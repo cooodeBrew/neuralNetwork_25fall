@@ -190,24 +190,23 @@ class BaseLLM:
         
         # Calculate number of output sequences (handles num_return_sequences)
         num_output_sequences = len(outputs)
+
+        # total padded length of the input sequence (same for all rows in a batch)
+        input_seq_len = inputs["input_ids"].shape[1]
         
         for i in range(num_output_sequences):
             # Map output index back to prompt index
-            prompt_idx = i // (num_return_sequences if num_return_sequences is not None else 1)
+            prompt_idx = i // (num_return_sequences or 1)
             
-            # Use attention mask to find actual input length (number of real tokens, not padding)
-            attention_mask = inputs["attention_mask"][prompt_idx]
-            # Count non-zero entries (real tokens, not padding)
-            actual_input_len = attention_mask.sum().item()
+            # slice off exactly the padded input length
+            generated_tokens = outputs[i, input_seq_len:]
             
-            # Slice to get only the generated tokens
-            # outputs[i] has shape [total_length] where total_length = input_length + generated_length
-            # We want everything after the actual input tokens
-            generated_tokens = outputs[i, actual_input_len:]
-            
-            # Decode the generated tokens
-            decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
-            decoded_outputs.append(decoded_output.strip())
+            decoded_output = self.tokenizer.decode(
+                generated_tokens,
+                skip_special_tokens=False
+            ).strip()
+
+            decoded_outputs.append(decoded_output)
         
         # Reshape if num_return_sequences is specified
         if num_return_sequences is not None:
