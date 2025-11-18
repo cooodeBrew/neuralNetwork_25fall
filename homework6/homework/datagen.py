@@ -27,8 +27,11 @@ def generate_dataset(output_json: str = "rft.json", oversample: int = 10, temper
     
     # Generate dataset
     rft_data = []
+    total_examples = len(train_data)
     
-    for question, correct_answer in train_data:
+    from tqdm import tqdm
+    
+    for idx, (question, correct_answer) in enumerate(tqdm(train_data, desc="Generating RFT dataset")):
         # Generate multiple completions
         completions = model.batched_generate(
             [question],
@@ -52,6 +55,10 @@ def generate_dataset(output_json: str = "rft.json", oversample: int = 10, temper
         # If no correct answer found, skip this data point
         if not found_correct:
             continue
+        
+        # Print progress every 10 examples
+        if (idx + 1) % 10 == 0:
+            print(f"Progress: {idx + 1}/{total_examples} examples processed, {len(rft_data)} correct answers found")
     
     # Save to JSON file
     output_path = Path(__file__).parent.parent / "data" / output_json
