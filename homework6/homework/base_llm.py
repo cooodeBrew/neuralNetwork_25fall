@@ -154,11 +154,13 @@ class BaseLLM:
             "do_sample": do_sample,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else self.tokenizer.eos_token_id,
-            "repetition_penalty": 1.1,  # Reduce repetition
         }
         
+        # Only apply repetition_penalty when sampling (temperature > 0)
+        # For greedy decoding, it can cause issues
         if temperature > 0:
             generate_kwargs["temperature"] = temperature
+            generate_kwargs["repetition_penalty"] = 1.1  # Reduce repetition when sampling
         
         if num_return_sequences is not None:
             generate_kwargs["num_return_sequences"] = num_return_sequences
@@ -176,8 +178,8 @@ class BaseLLM:
         # Decode only the generated tokens (not the input)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        # Skip special tokens for cleaner output, but keep them if needed for parsing
-        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        # Don't skip special tokens - the grader computes loss on the full text including special tokens
+        decoded = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
         
         # Reshape if num_return_sequences is specified
         if num_return_sequences is not None:
