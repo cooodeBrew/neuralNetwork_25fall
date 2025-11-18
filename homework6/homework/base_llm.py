@@ -84,8 +84,8 @@ class BaseLLM:
         
         # Decode only the generated tokens (exclude input tokens)
         generated_tokens = outputs[0, input_ids.shape[1]:]
-        # Skip special tokens for cleaner output (loss calculation will re-tokenize anyway)
-        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Keep special tokens - they're needed for proper loss calculation
+        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
         
         # Remove leading/trailing whitespace
         decoded_output = decoded_output.strip()
@@ -212,8 +212,8 @@ class BaseLLM:
         # Decode only the generated tokens (exclude input tokens)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
-        # Skip special tokens for cleaner output (loss calculation will re-tokenize anyway)
-        decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        # Keep special tokens - they're needed for proper loss calculation
+        decoded_outputs = self.tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)
         # Strip whitespace from each output
         decoded_outputs = [out.strip() for out in decoded_outputs]
         
