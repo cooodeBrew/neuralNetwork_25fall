@@ -25,11 +25,13 @@ def generate_dataset(output_json: str, oversample: int = 10, temperature: float 
         
         completions = generations[0]
         
-        # Find the first completion with a correct answer
+        # Find the best completion with a correct answer
+        # Try all completions and pick the first valid one
         found_correct = False
         for completion in completions:
             parsed_answer = model.parse_answer(completion)
             
+            # Check if answer is valid (not NaN and matches correct answer)
             if parsed_answer == parsed_answer and is_answer_valid(parsed_answer, correct_answer):
                 generated_data.append([question, correct_answer, completion])
                 found_correct = True

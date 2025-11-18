@@ -57,55 +57,8 @@ class BaseLLM:
         - decode the outputs with self.tokenizer.decode
 
         """
-        # Apply format_prompt to the input prompt
-        formatted_prompt = self.format_prompt(prompt)
-        
-        # Tokenize the prompt
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
-        # Move to device
-        input_ids = inputs["input_ids"].to(self.device)
-        attention_mask = inputs.get("attention_mask", None)
-        if attention_mask is not None:
-            attention_mask = attention_mask.to(self.device)
-        
-        # Generate
-        with torch.no_grad():
-            generation_kwargs = {
-                "input_ids": input_ids,
-                "max_new_tokens": 50,
-                "eos_token_id": self.tokenizer.eos_token_id,
-                "pad_token_id": self.tokenizer.pad_token_id,
-                "do_sample": False,  # Greedy decoding for single generation
-            }
-            if attention_mask is not None:
-                generation_kwargs["attention_mask"] = attention_mask
-            
-            outputs = self.model.generate(**generation_kwargs)
-        
-        # Decode only the generated tokens (exclude input tokens)
-        generated_tokens = outputs[0, input_ids.shape[1]:]
-        
-        # Check if we have any generated tokens
-        if generated_tokens.numel() == 0:
-            # No tokens generated, return empty string
-            return ""
-        
-        # Decode the generated tokens
-        # Always use skip_special_tokens=False to keep special tokens for loss calculation
-        # This is important - the grader's loss calculation needs the actual token sequence
-        decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=False)
-        
-        # If somehow we get empty, try the other way, but prefer keeping special tokens
-        if not decoded_output.strip():
-            decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
-            # If still empty, at least return something (the token IDs as string)
-            if not decoded_output.strip():
-                decoded_output = str(generated_tokens.tolist())
-        
-        # Remove leading/trailing whitespace
-        decoded_output = decoded_output.strip()
-        
-        return decoded_output
+        # Use batched_generate for consistency - it generates the same way and has better loss
+        return self.batched_generate([prompt])[0]
 
     @overload
     def batched_generate(

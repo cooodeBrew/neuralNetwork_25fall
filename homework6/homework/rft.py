@@ -100,16 +100,18 @@ def train_model(
     )
     
     # Training arguments
+    # RFT might need slightly more training or different learning rate
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        num_train_epochs=5,
+        num_train_epochs=6,  # Slightly more epochs for better performance
         per_device_train_batch_size=32,
-        learning_rate=5e-4,
+        learning_rate=3e-4,  # Slightly lower learning rate for more stable training
         gradient_checkpointing=True,
         save_strategy="epoch",
         save_total_limit=1,  # Only keep the last checkpoint to save space
+        warmup_steps=50,  # Add warmup for better convergence
     )
     
     # Create trainer
