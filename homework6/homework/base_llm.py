@@ -58,7 +58,9 @@ class BaseLLM:
 
         """
         # Use batched_generate for consistency - it generates the same way and has better loss
-        return self.batched_generate([prompt])[0]
+        # This ensures generate() and batched_generate() produce identical results
+        results = self.batched_generate([prompt])
+        return results[0] if results else ""
 
     @overload
     def batched_generate(
@@ -167,6 +169,8 @@ class BaseLLM:
             generation_kwargs["num_return_sequences"] = num_return_sequences
         
         # Generate
+        # Note: We don't set repetition_penalty or other stopping criteria
+        # to allow the model to generate up to max_new_tokens
         with torch.no_grad():
             outputs = self.model.generate(
                 input_ids=inputs["input_ids"],
@@ -180,6 +184,10 @@ class BaseLLM:
         # Decode only the generated tokens (exclude input tokens)
         input_length = inputs["input_ids"].shape[1]
         generated_tokens = outputs[:, input_length:]
+        
+        # Check how many tokens were actually generated
+        # The model might stop early at EOS, but we want to ensure consistency
+        num_generated = generated_tokens.shape[1]
         
         # Decode the generated tokens
         # Try with skip_special_tokens=False first to keep special tokens
