@@ -74,6 +74,7 @@ class BaseLLM:
                 "input_ids": input_ids,
                 "max_new_tokens": 50,
                 "eos_token_id": self.tokenizer.eos_token_id,
+                "pad_token_id": self.tokenizer.pad_token_id,
                 "do_sample": False,  # Greedy decoding for single generation
             }
             if attention_mask is not None:
@@ -85,7 +86,8 @@ class BaseLLM:
         generated_tokens = outputs[0, input_ids.shape[1]:]
         decoded_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         
-        return decoded_output
+        # Ensure we return a non-empty string (fallback to empty string if decoding fails)
+        return decoded_output if decoded_output else ""
 
     @overload
     def batched_generate(
@@ -182,6 +184,7 @@ class BaseLLM:
         generation_kwargs = {
             "max_new_tokens": 50,
             "eos_token_id": self.tokenizer.eos_token_id,
+            "pad_token_id": self.tokenizer.pad_token_id,
             "do_sample": do_sample,
         }
         
