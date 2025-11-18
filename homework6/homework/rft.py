@@ -37,9 +37,19 @@ def train_model(
     from .sft import TokenizedDataset, tokenize
     
     # Load RFT data from JSON file
+    # Check both possible locations (data/rft.json and data/data/rft.json)
     data_path = Path(__file__).parent.parent / "data" / "rft.json"
     if not data_path.exists():
-        raise FileNotFoundError(f"RFT data file not found at {data_path}. Please run datagen.py first.")
+        # Try the nested location (in case user passed "data/rft.json" to datagen)
+        data_path_nested = Path(__file__).parent.parent / "data" / "data" / "rft.json"
+        if data_path_nested.exists():
+            data_path = data_path_nested
+            print(f"Found RFT data at nested location: {data_path}")
+        else:
+            raise FileNotFoundError(
+                f"RFT data file not found at {data_path} or {data_path_nested}. "
+                f"Please run: python -m homework.datagen rft.json"
+            )
     
     with open(data_path, 'r') as f:
         rft_data = json.load(f)
