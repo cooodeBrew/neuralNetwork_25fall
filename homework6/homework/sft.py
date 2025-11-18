@@ -100,6 +100,12 @@ def train_model(
     # Initialize model
     llm = SFTModel()
     
+    # Print device information
+    print(f"Training on device: {llm.device}")
+    if llm.device == "cpu":
+        print("WARNING: Training on CPU is very slow! Consider using GPU if available.")
+        print("Expected time on CPU: 5-15 hours. On GPU: 30-90 minutes.")
+    
     # Set up LoRA configuration
     # Use r=16 to keep model size below 20MB (r=16, alpha=64 gives reasonable size)
     lora_config = LoraConfig(
@@ -134,11 +140,16 @@ def train_model(
     )
     
     # Set up training arguments
+    # Disable gradient checkpointing on CPU (it's slower and not needed)
+    # On GPU, keep it enabled to save memory
+    if 'gradient_checkpointing' not in kwargs:
+        kwargs['gradient_checkpointing'] = llm.device != "cpu"
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        gradient_checkpointing=True,  # Save GPU memory
+        gradient_checkpointing=kwargs.get('gradient_checkpointing', True),  # Save GPU memory, but disable on CPU
         learning_rate=5e-4,
         num_train_epochs=5,
         per_device_train_batch_size=32,

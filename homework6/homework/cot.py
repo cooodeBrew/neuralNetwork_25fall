@@ -11,7 +11,7 @@ class CoTModel(BaseLLM):
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant that performs unit conversions. Show your reasoning step by step, then provide your final answer in the exact format <answer>value</answer>. Always include the answer tags."
+                "content": "You are a helpful assistant that performs unit conversions. Be concise. Show your reasoning step by step, then provide your final answer in the exact format <answer>value</answer>. You must always include the <answer> and </answer> tags around your numerical answer."
             },
             {
                 "role": "user",
