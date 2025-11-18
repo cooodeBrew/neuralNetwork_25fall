@@ -17,6 +17,9 @@ device = (
 class BaseLLM:
     def __init__(self, checkpoint=checkpoint):
         self.tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+        # Set pad_token if not already set (some models use eos_token as pad_token)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
         self.device = device
 
@@ -61,15 +64,22 @@ class BaseLLM:
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
         # Move to device
         input_ids = inputs["input_ids"].to(self.device)
+        attention_mask = inputs.get("attention_mask", None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
         
         # Generate
         with torch.no_grad():
-            outputs = self.model.generate(
-                input_ids=input_ids,
-                max_new_tokens=50,
-                eos_token_id=self.tokenizer.eos_token_id,
-                do_sample=False,  # Greedy decoding for single generation
-            )
+            generation_kwargs = {
+                "input_ids": input_ids,
+                "max_new_tokens": 50,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "do_sample": False,  # Greedy decoding for single generation
+            }
+            if attention_mask is not None:
+                generation_kwargs["attention_mask"] = attention_mask
+            
+            outputs = self.model.generate(**generation_kwargs)
         
         # Decode only the generated tokens (exclude input tokens)
         generated_tokens = outputs[0, input_ids.shape[1]:]
