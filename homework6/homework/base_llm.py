@@ -2,6 +2,7 @@ from typing import overload
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from typing import List
 
 checkpoint = "HuggingFaceTB/SmolLM2-360M-Instruct"
 
