@@ -114,9 +114,17 @@ def train_model(
     # Convert model to LoRA
     llm.model = get_peft_model(llm.model, lora_config)
     
-    # Enable input require grads to avoid gradient checkpointing bug
-    if llm.device != "cpu":
-        llm.model.enable_input_require_grads()
+    # Enable input require grads BEFORE setting training mode
+    # This is critical for gradient checkpointing to work properly
+    llm.model.enable_input_require_grads()
+    
+    # Set model to training mode
+    llm.model.train()
+    
+    # Print trainable parameters for debugging
+    trainable_params = sum(p.numel() for p in llm.model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in llm.model.parameters())
+    print(f"Trainable parameters: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
     
     # Create tokenized dataset
     tokenized_dataset = TokenizedDataset(
@@ -130,7 +138,7 @@ def train_model(
         output_dir=output_dir,
         logging_dir=output_dir,
         report_to="tensorboard",
-        gradient_checkpointing=True,
+        gradient_checkpointing=True,  # Save GPU memory
         learning_rate=5e-4,
         num_train_epochs=5,
         per_device_train_batch_size=32,
