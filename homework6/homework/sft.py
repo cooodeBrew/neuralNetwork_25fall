@@ -152,7 +152,7 @@ def train_model(
         learning_rate=5e-4,
         num_train_epochs=5,
         per_device_train_batch_size=32,
-        save_strategy="epoch",
+        save_strategy="no",  # Don't save checkpoints during training to save space
         logging_steps=10,
         **kwargs
     )
@@ -167,9 +167,16 @@ def train_model(
     # Train
     trainer.train()
     
-    # Save the final model
+    # Save only the LoRA adapter (not the full model) to keep size under 20MB
     output_path = Path(__file__).parent / "sft_model"
-    trainer.save_model(str(output_path))
+    llm.model.save_pretrained(str(output_path))
+    
+    # Clean up training checkpoints to save space
+    import shutil
+    checkpoint_dirs = [d for d in Path(output_dir).iterdir() if d.is_dir() and d.name.startswith("checkpoint")]
+    for checkpoint_dir in checkpoint_dirs:
+        shutil.rmtree(checkpoint_dir)
+        print(f"Deleted checkpoint: {checkpoint_dir}")
     
     # Test the model
     test_model(str(output_path))
